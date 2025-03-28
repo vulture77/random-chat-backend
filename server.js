@@ -12,13 +12,19 @@ const app = express();
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: {
-    origin: "http://localhost:3000",
+    origin: ["http://localhost:3000", "https://your-frontend-url.com"],
     methods: ["GET", "POST"],
   },
 });
 
 app.use(cors());
 app.use(express.json());
+
+// ✅ Ensure MONGO_URI exists
+if (!process.env.MONGO_URI) {
+  console.error("❌ MONGO_URI is missing from environment variables.");
+  process.exit(1);
+}
 
 // ✅ MongoDB Connection
 mongoose
@@ -30,8 +36,11 @@ mongoose
 app.post("/register", async (req, res) => {
   try {
     const { username, email, password } = req.body;
-    const existingUser = await User.findOne({ email });
+    if (!username || !email || !password) {
+      return res.status(400).json({ error: "All fields are required" });
+    }
 
+    const existingUser = await User.findOne({ email });
     if (existingUser) return res.status(400).json({ error: "Email already in use" });
 
     const hashedPassword = await bcrypt.hash(password, 10);
@@ -40,15 +49,18 @@ app.post("/register", async (req, res) => {
 
     res.status(201).json({ message: "User registered successfully" });
   } catch (error) {
-    res.status(500).json({ error: "Registration failed", details: error });
+    res.status(500).json({ error: "Registration failed", details: error.message });
   }
 });
 
 app.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body;
-    const user = await User.findOne({ email });
+    if (!email || !password) {
+      return res.status(400).json({ error: "All fields are required" });
+    }
 
+    const user = await User.findOne({ email });
     if (!user) return res.status(400).json({ error: "User not found" });
 
     const isMatch = await bcrypt.compare(password, user.password);
@@ -58,7 +70,7 @@ app.post("/login", async (req, res) => {
 
     res.json({ message: "Login successful", token });
   } catch (error) {
-    res.status(500).json({ error: "Login failed", details: error });
+    res.status(500).json({ error: "Login failed", details: error.message });
   }
 });
 
@@ -69,9 +81,13 @@ io.on("connection", (socket) => {
   console.log("🔵 A user connected:", socket.id);
 
   socket.on("user:join", (user) => {
+    if (!user?.username) {
+      socket.emit("error", { message: "Invalid username" });
+      return;
+    }
     socket.username = user.username;
 
-    if (waitingUser) {
+    if (waitingUser && waitingUser !== socket) {
       socket.partner = waitingUser;
       waitingUser.partner = socket;
 
@@ -96,7 +112,6 @@ io.on("connection", (socket) => {
       socket.partner.emit("chat:ended", { message: "Partner left. Searching for a new user..." });
       socket.partner.partner = null;
     }
-
     socket.partner = null;
     waitingUser = socket;
     socket.emit("chat:waiting", { message: "Searching for a new partner..." });
@@ -104,12 +119,11 @@ io.on("connection", (socket) => {
 
   socket.on("disconnect", () => {
     console.log("🔴 A user disconnected:", socket.id);
-
+    
     if (socket.partner) {
       socket.partner.emit("chat:ended", { message: "Your partner disconnected. Searching for a new user..." });
       socket.partner.partner = null;
     }
-
     if (waitingUser === socket) {
       waitingUser = null;
     }
